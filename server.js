@@ -1,6 +1,7 @@
 import express from "express";
 import cors from "cors";
-import connectionPool from "./utils/db.mjs";
+import connectionPool from "./db.js";
+import validatePostData from "./middleware/postValidation.js";
 
 const app = express();
 const port = process.env.PORT || 4001;
@@ -12,7 +13,33 @@ app.get("/", (req, res) => {
   res.send("Hello TechUp!");
 });
 
-app.post("/posts", async (req, res) => {
+// Mock data for testing when database is not available
+const mockPosts = [
+  {
+    id: 1,
+    title: "Sample Post 1",
+    image: "https://via.placeholder.com/300x200",
+    category: "Technology",
+    description: "This is a sample post description",
+    content: "This is the full content of the sample post",
+    date: new Date().toISOString(),
+    status: "Published",
+    likes_count: 10
+  },
+  {
+    id: 2,
+    title: "Sample Post 2",
+    image: "https://via.placeholder.com/300x200",
+    category: "Lifestyle",
+    description: "Another sample post description",
+    content: "This is another sample post content",
+    date: new Date().toISOString(),
+    status: "Published",
+    likes_count: 5
+  }
+];
+
+app.post("/posts", validatePostData, async (req, res) => {
   // ลอจิกในการเก็บข้อมูลของโพสต์ลงในฐานข้อมูล
 
   // 1) Access ข้อมูลใน Body จาก Request ด้วย req.body
@@ -33,14 +60,16 @@ app.post("/posts", async (req, res) => {
     ];
 
     await connectionPool.query(query, values);
-  } catch {
+    
+    // 3) Return ตัว Response กลับไปหา Client ว่าสร้างสำเร็จ
+    return res.status(201).json({ message: "Created post successfully" });
+  } catch (error) {
+    console.error("Database error:", error);
     return res.status(500).json({
-      message: `Server could not create post because database connection`,
+      message: "Server could not create post because database connection",
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
-
-  // 3) Return ตัว Response กลับไปหา Client ว่าสร้างสำเร็จ
-  return res.status(201).json({ message: "Created post successfully" });
 });
 
 app.get("/posts", async (req, res) => {
@@ -185,7 +214,7 @@ app.get("/posts/:postId", async (req, res) => {
   }
 });
 
-app.put("/posts/:postId", async (req, res) => {
+app.put("/posts/:postId", validatePostData, async (req, res) => {
   // ลอจิกในการแก้ไขข้อมูลโพสต์ด้วย Id ในระบบ
 
   // 1) Access ตัว Endpoint Parameter ด้วย req.params
