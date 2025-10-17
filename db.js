@@ -1,21 +1,10 @@
-import pkg from "pg";
-const { Pool } = pkg;
-import dotenv from "dotenv";
+import * as pg from "pg";
+import "dotenv/config";
+const { Pool } = pg.default;
 
-dotenv.config();
-
-// สร้าง connection pool
 const connectionPool = new Pool({
-  host: process.env.DB_HOST || "localhost",
-  port: process.env.DB_PORT || 5432,
-  user: process.env.DB_USER || "postgres",
-  password: process.env.DB_PASSWORD || "password",
-  database: process.env.DB_NAME || "blogdb",
+  // ตรงนี้ต้องเปลี่ยน connectionString เป็นของตัวเองด้วยนะ
+  connectionString: process.env.CONNECTION_STRING,
 });
-
-// ทดสอบเชื่อมต่อ
-connectionPool.connect()
-  .then(() => console.log("✅ Connected to PostgreSQL successfully"))
-  .catch(err => console.error("❌ Connection error:", err.stack));
 
 export default connectionPool;
