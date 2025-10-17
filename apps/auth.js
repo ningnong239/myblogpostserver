@@ -10,7 +10,7 @@ import connectionPool from "../db.js";      // PostgreSQL connection pool
 // 🔧 Supabase Configuration with Fallback
 // ถ้าไม่มี Supabase config จะใช้ mock authentication
 const supabase = process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY && 
-  process.env.SUPABASE_URL !== 'https://rxlmkbwpfruzzvnlgqtr.supabase.co' 
+  process.env.SUPABASE_URL !== 'https://your-project.supabase.co' 
   ? createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY)
   : null;
 
@@ -70,22 +70,34 @@ authRouter.post("/register", async (req, res) => {
     // 🆔 Get Supabase User ID
     const supabaseUserId = data.user.id;
 
-    // 💾 Save User Details to PostgreSQL Database
-    const query = `
-        INSERT INTO users (id, username, name, role)
-        VALUES ($1, $2, $3, $4)
-        RETURNING *;
-      `;
+    // 💾 Save User Details to Supabase Database (using RPC)
+    const { data: userData, error: dbError } = await supabase.rpc('insert_user', {
+      user_id: supabaseUserId,
+      user_username: username,
+      user_name: name,
+      user_email: email,
+      user_role: 'user'
+    });
 
-    const values = [supabaseUserId, username, name, "user"];
-
-    // 🗄️ Execute Database Query
-    const { rows } = await connectionPool.query(query, values);
+    if (dbError) {
+      console.error("❌ Database error:", dbError);
+      // Fallback: Return basic user info if database insert fails
+      return res.status(201).json({
+        message: "✅ User created successfully (Supabase Auth only)",
+        user: {
+          id: supabaseUserId,
+          username,
+          name,
+          email,
+          role: 'user'
+        }
+      });
+    }
     
     // ✅ Success Response
     res.status(201).json({
       message: "✅ User created successfully",
-      user: rows[0],
+      user: userData,
     });
     
   } catch (error) {
@@ -161,9 +173,33 @@ authRouter.post("/login", async (req, res) => {
       return res.status(400).json({ error: error.message });
     }
 
+    // 🔍 Get User Details from Supabase Database
+    const { data: userData, error: dbError } = await supabase
+      .from('users')
+      .select('*')
+      .eq('id', data.user.id)
+      .single();
+
+    if (dbError) {
+      console.log("⚠️ User not found in database, using basic info");
+      // Fallback: Return basic user info if not found in database
+      return res.status(200).json({
+        message: "Signed in successfully",
+        access_token: data.session.access_token,
+        user: {
+          id: data.user.id,
+          email: data.user.email,
+          username: email.split('@')[0],
+          name: data.user.user_metadata?.name || email.split('@')[0],
+          role: "user"
+        }
+      });
+    }
+
     return res.status(200).json({
       message: "Signed in successfully",
       access_token: data.session.access_token,
+      user: userData
     });
   } catch (error) {
     console.error("Login error:", error);
