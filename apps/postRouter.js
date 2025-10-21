@@ -1,12 +1,11 @@
 import { Router } from "express";
-import connectionPool from "../db.js";
 import protectAdmin from "../middleware/protectAdmin.js";
 import multer from "multer";
 import { createClient } from "@supabase/supabase-js";
 
 // Create Supabase client with fallback
 const supabase = process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY && 
-  process.env.SUPABASE_URL !== 'https://rxlmkbwpfruzzvnlgqtr.supabase.co' 
+  process.env.SUPABASE_URL !== 'https://your-project.supabase.co' 
   ? createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY)
   : {
       storage: {
@@ -54,19 +53,23 @@ postRouter.post("/", [imageFileUpload, protectAdmin], async (req, res) => {
         data: { publicUrl },
       } = supabase.storage.from(bucketName).getPublicUrl(data.path);
 
-      const query = `INSERT INTO posts (title, image, category_id, description, content, status_id)
-      values ($1, $2, $3, $4, $5, $6)`;
+      // Insert post data into Supabase
+      const { data: postData, error: postError } = await supabase
+        .from('posts')
+        .insert([{
+          title: newPost.title,
+          image: publicUrl,
+          category_id: parseInt(newPost.category_id),
+          description: newPost.description,
+          content: newPost.content,
+          status_id: parseInt(newPost.status_id)
+        }])
+        .select();
 
-      const values = [
-        newPost.title,
-        publicUrl,
-        parseInt(newPost.category_id),
-        newPost.description,
-        newPost.content,
-        parseInt(newPost.status_id),
-      ];
-
-      await connectionPool.query(query, values);
+      if (postError) {
+        console.error("Supabase post creation error:", postError);
+        throw postError;
+      }
     } catch (err) {
       return res.status(500).json({
         message: `Server could not create post because database connection`,
@@ -133,47 +136,69 @@ postRouter.get("/", async (req, res) => {
 
     values.push(safeLimit, offset);
 
-    // 6) Execute the main query (ดึงข้อมูลของบทความ)
-    const result = await connectionPool.query(query, values);
-
-    // 7) สร้าง Query สำหรับนับจำนวนทั้งหมดตามเงื่อนไข พื่อใช้สำหรับ pagination metadata
-    let countQuery = `
-        SELECT COUNT(*)
-        FROM posts
-        INNER JOIN categories ON posts.category_id = categories.id
-        INNER JOIN statuses ON posts.status_id = statuses.id
-        WHERE statuses.id = 2 
-      `;
-    let countValues = values.slice(0, -2); // ลบค่า limit และ offset ออกจาก values
-
-    if (category && keyword) {
-      countQuery += `
-          AND categories.name ILIKE $1 
-          AND (posts.title ILIKE $2 OR posts.description ILIKE $2 OR posts.content ILIKE $2)
-        `;
-    } else if (category) {
-      countQuery += " AND categories.name ILIKE $1";
-    } else if (keyword) {
-      countQuery += `
-          AND (posts.title ILIKE $1 
-          OR posts.description ILIKE $1 
-          OR posts.content ILIKE $1)
-        `;
+    // 6) Execute the main query using Supabase
+    if (!supabase) {
+      return res.status(500).json({ error: "Supabase not configured" });
     }
 
-    const countResult = await connectionPool.query(countQuery, countValues);
-    const totalPosts = Number(countResult.rows[0].count);
+    // Build Supabase query
+    let supabaseQuery = supabase
+      .from('posts')
+      .select(`
+        *,
+        categories!inner(name)
+      `)
+      .eq('status_id', 2) // Only published posts
+      .order('date', { ascending: false })
+      .range(offset, offset + safeLimit - 1);
+
+    // Add filters
+    if (category) {
+      supabaseQuery = supabaseQuery.ilike('categories.name', `%${category}%`);
+    }
+    if (keyword) {
+      supabaseQuery = supabaseQuery.or(`title.ilike.%${keyword}%,description.ilike.%${keyword}%,content.ilike.%${keyword}%`);
+    }
+
+    const { data: posts, error } = await supabaseQuery;
+
+    if (error) {
+      console.error("Supabase error:", error);
+      return res.status(500).json({ error: "Failed to fetch posts" });
+    }
+
+    const result = { rows: posts || [] };
+
+    // 7) Get total count for pagination using Supabase
+    let countQuery = supabase
+      .from('posts')
+      .select('id', { count: 'exact' })
+      .eq('status_id', 2);
+
+    if (category) {
+      countQuery = countQuery.ilike('categories.name', `%${category}%`);
+    }
+    if (keyword) {
+      countQuery = countQuery.or(`title.ilike.%${keyword}%,description.ilike.%${keyword}%,content.ilike.%${keyword}%`);
+    }
+
+    const { count: totalPosts, error: countError } = await countQuery;
+
+    if (countError) {
+      console.error("Supabase count error:", countError);
+      return res.status(500).json({ error: "Failed to count posts" });
+    }
 
     // 8) สร้าง response พร้อมข้อมูลการแบ่งหน้า (pagination)
     const results = {
-      totalPosts,
-      totalPages: Math.ceil(totalPosts / safeLimit),
+      totalPosts: totalPosts || 0,
+      totalPages: Math.ceil((totalPosts || 0) / safeLimit),
       currentPage: safePage,
       limit: safeLimit,
       posts: result.rows,
     };
     // เช็คว่ามีหน้าถัดไปหรือไม่
-    if (offset + safeLimit < totalPosts) {
+    if (offset + safeLimit < (totalPosts || 0)) {
       results.nextPage = safePage + 1;
     }
     // เช็คว่ามีหน้าก่อนหน้าหรือไม่
@@ -192,26 +217,30 @@ postRouter.get("/", async (req, res) => {
 // get all posts including draf
 postRouter.get("/admin", protectAdmin, async (req, res) => {
   try {
- // Query all posts with their category and status for admin view
-    const query = `
-      SELECT 
-          posts.*, 
-          categories.name AS category, 
-          statuses.status
-      FROM posts
-      INNER JOIN categories ON posts.category_id = categories.id
-      INNER JOIN statuses ON posts.status_id = statuses.id
-      ORDER BY posts.date DESC;
-    `;
+    if (!supabase) {
+      return res.status(500).json({ error: "Supabase not configured" });
+    }
 
-    // Execute the query
-    const result = await connectionPool.query(query);
+    // Query all posts with their category for admin view
+    const { data: posts, error } = await supabase
+      .from('posts')
+      .select(`
+        *,
+        categories!inner(name)
+      `)
+      .order('date', { ascending: false });
+
+    if (error) {
+      console.error("Supabase error:", error);
+      return res.status(500).json({ error: "Failed to fetch posts" });
+    }
 
     // Return all posts as the response
     return res.status(200).json({
-      posts: result.rows,
+      posts: posts || [],
     });
   } catch (error) {
+    console.error("Admin posts error:", error);
     return res.status(500).json({
       message: "Server could not read posts because of a database issue",
     });
@@ -219,37 +248,38 @@ postRouter.get("/admin", protectAdmin, async (req, res) => {
 });
     
 postRouter.get("/:postId", async (req, res) => {
-  // ลอจิกในอ่านข้อมูลโพสต์ด้วย Id ในระบบ
-  // 1) Access ตัว Endpoint Parameter ด้วย req.params
   const postIdFromClient = req.params.postId;
 
   try {
-    // 2) เขียน Query เพื่ออ่านข้อมูลโพสต์ ด้วย Connection Pool
-    const results = await connectionPool.query(
-      `
-    SELECT 
-        posts.*, 
-        categories.name AS category, 
-        statuses.status
-    FROM posts
-    INNER JOIN categories ON posts.category_id = categories.id
-    INNER JOIN statuses ON posts.status_id = statuses.id
-    WHERE posts.id = $1
-    AND statuses.id = 2 
-  `,
-      [postIdFromClient] // status id = 2 means showing only publish post
-    );
+    if (!supabase) {
+      return res.status(500).json({ error: "Supabase not configured" });
+    }
 
-     // เพิ่ม Conditional logic ว่าถ้าข้อมูลที่ได้กลับมาจากฐานข้อมูลเป็นค่า false (null / undefined)
-     if (!results.rows[0]) {
+    // Query post with category using Supabase
+    const { data: post, error } = await supabase
+      .from('posts')
+      .select(`
+        *,
+        categories!inner(name)
+      `)
+      .eq('id', postIdFromClient)
+      .eq('status_id', 2) // Only published posts
+      .single();
+
+    if (error) {
+      console.error("Supabase error:", error);
+      return res.status(500).json({ error: "Failed to fetch post" });
+    }
+
+    if (!post) {
       return res.status(404).json({
         message: `Server could not find a requested post (post id: ${postIdFromClient})`,
       });
     }
 
-    // 3) Return ตัว Response กลับไปหา Client
-    return res.status(200).json(results.rows[0]);
+    return res.status(200).json(post);
   } catch (err) {
+    console.error("Post fetch error:", err);
     return res.status(500).json({
       message: `Server could not read post because database issue`,
     });
@@ -257,40 +287,41 @@ postRouter.get("/:postId", async (req, res) => {
 });
 
 postRouter.get("/admin/:postId", protectAdmin, async (req, res) => {
-  // ลอจิกในอ่านข้อมูลโพสต์ด้วย Id ในระบบ
-  // 1) Access ตัว Endpoint Parameter ด้วย req.params
   const postIdFromClient = req.params.postId;
 
   try {
-    // 2) เขียน Query เพื่ออ่านข้อมูลโพสต์ ด้วย Connection Pool
-    const results = await connectionPool.query(
-      `
-      SELECT 
-        posts.*, 
-        categories.name AS category, 
-        statuses.status
-    FROM posts
-    INNER JOIN categories ON posts.category_id = categories.id
-    INNER JOIN statuses ON posts.status_id = statuses.id
-    WHERE posts.id = $1
-  `,
-  [postIdFromClient] // status id = 2 means showing only publish post
-);
+    if (!supabase) {
+      return res.status(500).json({ error: "Supabase not configured" });
+    }
 
-// เพิ่ม Conditional logic ว่าถ้าข้อมูลที่ได้กลับมาจากฐานข้อมูลเป็นค่า false (null / undefined)
-if (!results.rows[0]) {
-  return res.status(404).json({
-    message: `Server could not find a requested post (post id: ${postIdFromClient})`,
-  });
-}
+    // Query post with category using Supabase
+    const { data: post, error } = await supabase
+      .from('posts')
+      .select(`
+        *,
+        categories!inner(name)
+      `)
+      .eq('id', postIdFromClient)
+      .single();
 
- // 3) Return ตัว Response กลับไปหา Client
- return res.status(200).json(results.rows[0]);
-} catch {
-  return res.status(500).json({
-    message: `Server could not read post because database issue`,
-  });
-}
+    if (error) {
+      console.error("Supabase error:", error);
+      return res.status(500).json({ error: "Failed to fetch post" });
+    }
+
+    if (!post) {
+      return res.status(404).json({
+        message: `Server could not find a requested post (post id: ${postIdFromClient})`,
+      });
+    }
+
+    return res.status(200).json(post);
+  } catch (err) {
+    console.error("Admin post fetch error:", err);
+    return res.status(500).json({
+      message: `Server could not read post because database issue`,
+    });
+  }
 });
 
 postRouter.put(
@@ -334,36 +365,32 @@ async (req, res) => {
           publicUrl = response.data.publicUrl;
         }
   
-        // Update the database
-        const result = await connectionPool.query(
-          `
-            UPDATE posts
-            SET title = $2,
-                image = $3,
-                category_id = $4,
-                description = $5,
-                content = $6,
-                status_id = $7,
-                date = $8
-            WHERE id = $1
-          `,
-          [
-            postIdFromClient,
-            updatedPost.title,
-            publicUrl, // Updated image URL
-          parseInt(updatedPost.category_id),
-          updatedPost.description,
-          updatedPost.content,
-          parseInt(updatedPost.status_id),
-          updatedPost.date,
-        ]
-      );
+        // Update the database using Supabase
+        const { data, error: updateError } = await supabase
+          .from('posts')
+          .update({
+            title: updatedPost.title,
+            image: publicUrl,
+            category_id: parseInt(updatedPost.category_id),
+            description: updatedPost.description,
+            content: updatedPost.content,
+            status_id: parseInt(updatedPost.status_id),
+            date: updatedPost.date
+          })
+          .eq('id', postIdFromClient)
+          .select();
 
-      if (result.rowCount === 0) {
-        return res.status(404).json({
-          message: `Server could not find a requested post to update (post id: ${postIdFromClient})`,
-        });
-      }
+        if (updateError) {
+          console.error("Supabase update error:", updateError);
+          throw updateError;
+        }
+
+        if (!data || data.length === 0) {
+          return res.status(404).json({
+            message: `Server could not find a requested post to update (post id: ${postIdFromClient})`,
+          });
+        }
+
 
       return res.status(200).json({
         message: "Updated post successfully",
@@ -378,30 +405,36 @@ async (req, res) => {
 );
 
 postRouter.delete("/:postId", protectAdmin, async (req, res) => {
-  // ลอจิกในการลบข้อมูลโพสต์ด้วย Id ในระบบ
-
-  // 1) Access ตัว Endpoint Parameter ด้วย req.params
   const postIdFromClient = req.params.postId;
 
   try {
-    // 2) เขียน Query เพื่อลบข้อมูลโพสต์ ด้วย Connection Pool
-    const result = await connectionPool.query(
-      `DELETE FROM posts
-         WHERE id = $1`,
-      [postIdFromClient]
-    );
+    if (!supabase) {
+      return res.status(500).json({ error: "Supabase not configured" });
+    }
 
-    if (result.rowCount === 0) {
+    // Delete post using Supabase
+    const { data, error } = await supabase
+      .from('posts')
+      .delete()
+      .eq('id', postIdFromClient)
+      .select();
+
+    if (error) {
+      console.error("Supabase delete error:", error);
+      return res.status(500).json({ error: "Failed to delete post" });
+    }
+
+    if (!data || data.length === 0) {
       return res.status(404).json({
         message: `Server could not find a requested post to delete (post id: ${postIdFromClient})`,
       });
     }
 
-    // 3) Return ตัว Response กลับไปหา Client
     return res.status(200).json({
       message: "Deleted post successfully",
     });
-  } catch {
+  } catch (err) {
+    console.error("Post deletion error:", err);
     return res.status(500).json({
       message: `Server could not delete post because database connection`,
     });

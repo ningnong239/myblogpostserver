@@ -70,27 +70,24 @@ authRouter.post("/register", async (req, res) => {
     // 🆔 Get Supabase User ID
     const supabaseUserId = data.user.id;
 
-    // 💾 Save User Details to Supabase Database (using RPC)
-    const { data: userData, error: dbError } = await supabase.rpc('insert_user', {
-      user_id: supabaseUserId,
-      user_username: username,
-      user_name: name,
-      user_email: email,
-      user_role: 'user'
-    });
-
-    if (dbError) {
-      console.error("❌ Database error:", dbError);
-      // Fallback: Return basic user info if database insert fails
-      return res.status(201).json({
-        message: "✅ User created successfully (Supabase Auth only)",
-        user: {
+    // 💾 Save User Details to Supabase Database
+    const { data: userData, error: dbError } = await supabase
+        .from('users')
+        .insert({
           id: supabaseUserId,
           username,
           name,
-          email,
-          role: 'user'
-        }
+        email,
+        role: 'user'
+      })
+      .select()
+      .single();
+
+    if (dbError) {
+      console.error("❌ Database error:", dbError);
+      return res.status(400).json({ 
+        error: "Failed to save user details. Please try again.",
+        details: dbError.message
       });
     }
     
