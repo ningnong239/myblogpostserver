@@ -1,22 +1,13 @@
 import { Router } from "express";
+import { createClient } from "@supabase/supabase-js";
 import connectionPool from "../db.js";
 import protectUser from "../middleware/protectUser.js";
 import multer from "multer";
 
-import { createClient } from "@supabase/supabase-js";
-
-// Create Supabase client with fallback
-const supabase = process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY && 
-  process.env.SUPABASE_URL !== 'https://rxlmkbwpfruzzvnlgqtr.supabase.co' 
-  ? createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY)
-  : {
-      storage: {
-        from: () => ({
-          upload: () => Promise.resolve({ data: { path: 'mock-path' }, error: null }),
-          getPublicUrl: () => ({ data: { publicUrl: 'https://example.com/mock-image.jpg' } })
-        })
-      }
-    };
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_ANON_KEY
+);
 
 const profileRouter = Router();
 const multerUpload = multer({ storage: multer.memoryStorage() });
