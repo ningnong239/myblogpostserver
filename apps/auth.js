@@ -83,10 +83,29 @@ authRouter.post("/login", async (req, res) => {
       }
       return res.status(400).json({ error: error.message });
     }
-    console.log("Login data:", data);
+    // Fetch User Details from Database
+    const { data: userData, error: dbError } = await supabase
+      .from('users')
+      .select('*')
+      .eq('id', data.user.id)
+      .single();
+
+    if (dbError) {
+      console.error("❌ Database error:", dbError);
+      return res.status(400).json({
+        error: "User not found in database",
+        details: dbError.message
+      });
+    }
+
     return res.status(200).json({
-      message: "Signed in successfully",
       access_token: data.session.access_token,
+      user: {
+        id: userData.id,
+        email: userData.email,
+        name: userData.name,
+        avatar: userData.profile_pic
+      }
     });
   } catch {
     return res.status(500).json({ error: "An error occurred during login" });
@@ -107,18 +126,23 @@ authRouter.get("/get-user", async (req, res) => {
       return res.status(401).json({ error: "Unauthorized or token expired" });
     }
 
-    const supabaseUserId = data.user.id;
-    const query = `SELECT * FROM users WHERE id = $1`;
-    const values = [supabaseUserId];
-    const { rows } = await connectionPool.query(query, values);
+    // Fetch user details from database
+    const { data: userData, error: dbError } = await supabase
+      .from('users')
+      .select('*')
+      .eq('id', data.user.id)
+      .single();
+
+    if (dbError) {
+      console.error("❌ Database error:", dbError);
+      return res.status(500).json({ error: "User not found in database" });
+    }
 
     res.status(200).json({
-      id: data.user.id,
-      email: data.user.email,
-      username: rows[0].username,
-      name: rows[0].name,
-      role: rows[0].role,
-      profilePic: rows[0].profile_pic,
+      id: userData.id,
+      email: userData.email,
+      name: userData.name,
+      avatar: userData.profile_pic
     });
   } catch {
     res.status(500).json({ error: "Internal server error" });
