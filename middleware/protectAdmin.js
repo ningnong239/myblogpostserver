@@ -1,11 +1,10 @@
 import { createClient } from "@supabase/supabase-js";
 import connectionPool from "../db.js";
 
-// Create Supabase client with fallback
-const supabase = process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY && 
-  process.env.SUPABASE_URL !== 'https://rxlmkbwpfruzzvnlgqtr.supabase.co' 
-  ? createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY)
-  : null;
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_ANON_KEY
+);
 
 // Middleware to check for valid JWT token and if the user has an "admin" role
 const protectAdmin = async (req, res, next) => {
